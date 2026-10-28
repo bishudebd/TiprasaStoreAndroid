@@ -1,0 +1,237 @@
+package com.tiprasa.store
+
+import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.Uri
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import android.graphics.Color
+
+class MainActivity : ComponentActivity() {
+    private val storeUrl = "https://tiprasastore.smartbiz.in/"
+    private lateinit var webView: WebView
+    private lateinit var swipeRefresh: SwipeRefreshLayout
+    private lateinit var progress: ProgressBar
+    private lateinit var errorPanel: LinearLayout
+    private var pageFailed = false
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+        }
+
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            visibility = View.GONE
+        }
+        root.addView(progress, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(3)
+        ))
+
+        swipeRefresh = SwipeRefreshLayout(this).apply {
+            setColorSchemeResources(R.color.tiprasa_primary)
+        }
+        webView = WebView(this).apply {
+            setBackgroundColor(Color.WHITE)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.loadsImagesAutomatically = true
+            settings.javaScriptCanOpenWindowsAutomatically = false
+            settings.setSupportMultipleWindows(false)
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
+            settings.allowFileAccess = false
+            settings.allowContentAccess = false
+            webViewClient = StoreWebViewClient()
+            webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                    progress.progress = newProgress
+                    progress.visibility = if (newProgress in 1..99) View.VISIBLE else View.GONE
+                }
+            }
+        }
+        swipeRefresh.addView(webView, SwipeRefreshLayout.LayoutParams(
+            SwipeRefreshLayout.LayoutParams.MATCH_PARENT,
+            SwipeRefreshLayout.LayoutParams.MATCH_PARENT
+        ))
+        swipeRefresh.setOnRefreshListener {
+            if (isOnline()) webView.reload() else showOfflineMessage()
+        }
+        root.addView(swipeRefresh, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+
+        errorPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(24), dp(24), dp(24), dp(24))
+            visibility = View.GONE
+            setBackgroundColor(Color.WHITE)
+            addView(TextView(this@MainActivity).apply {
+                text = "You're offline"
+                textSize = 22f
+                setTextColor(Color.rgb(32, 45, 60))
+                gravity = Gravity.CENTER
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Check your internet connection and try again."
+                textSize = 15f
+                setTextColor(Color.DKGRAY)
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, dp(16))
+            })
+            addView(Button(this@MainActivity).apply {
+                text = "Try again"
+                setOnClickListener {
+                    visibility = View.GONE
+                    swipeRefresh.visibility = View.VISIBLE
+                    if (isOnline()) webView.loadUrl(storeUrl) else showOfflineMessage()
+                }
+            })
+        }
+        root.addView(errorPanel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+
+        // Compact native action row gives the app a little app-specific utility.
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.WHITE)
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+        }
+        actions.addView(Button(this).apply {
+            text = "Home"
+            setOnClickListener { webView.loadUrl(storeUrl) }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        actions.addView(Button(this).apply {
+            text = "Refresh"
+            setOnClickListener { if (isOnline()) webView.reload() else showOfflineMessage() }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        actions.addView(Button(this).apply {
+            text = "Share"
+            setOnClickListener {
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "TiprasaStore")
+                    putExtra(Intent.EXTRA_TEXT, "Shop online at $storeUrl")
+                }
+                startActivity(Intent.createChooser(share, "Share TiprasaStore"))
+            }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        root.addView(actions)
+
+        setContentView(root)
+        if (savedInstanceState != null) webView.restoreState(savedInstanceState)
+        else if (isOnline()) webView.loadUrl(storeUrl) else showOfflineMessage()
+    }
+
+    private inner class StoreWebViewClient : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            val uri = request.url
+            val scheme = uri.scheme?.lowercase() ?: return true
+            if (scheme == "https" || scheme == "http") return false
+
+            if (scheme == "tel" || scheme == "mailto" || scheme == "upi" ||
+                scheme == "intent" || scheme == "market") {
+                return openExternal(uri)
+            }
+            return true
+        }
+
+        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            pageFailed = false
+            errorPanel.visibility = View.GONE
+            swipeRefresh.visibility = View.VISIBLE
+            super.onPageStarted(view, url, favicon)
+        }
+
+        override fun onPageFinished(view: WebView?, url: String?) {
+            swipeRefresh.isRefreshing = false
+            if (!pageFailed) {
+                errorPanel.visibility = View.GONE
+                swipeRefresh.visibility = View.VISIBLE
+            }
+            super.onPageFinished(view, url)
+        }
+
+        override fun onReceivedError(
+            view: WebView,
+            request: WebResourceRequest,
+            error: WebResourceError
+        ) {
+            super.onReceivedError(view, request, error)
+            if (request.isForMainFrame) {
+                pageFailed = true
+                showOfflineMessage()
+            }
+        }
+    }
+
+    private fun openExternal(uri: Uri): Boolean {
+        return try {
+            startActivity(Intent(Intent.ACTION_VIEW, uri))
+            true
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "No compatible app found for this link.", Toast.LENGTH_SHORT).show()
+            true
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return false
+        val capabilities = cm.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun showOfflineMessage() {
+        swipeRefresh.isRefreshing = false
+        swipeRefresh.visibility = View.GONE
+        errorPanel.visibility = View.VISIBLE
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        webView.saveState(outState)
+        super.onSaveInstanceState(outState)
+    }
+
+    @Deprecated("Deprecated in Android API; maintained for back-button compatibility")
+    override fun onBackPressed() {
+        if (::webView.isInitialized && webView.canGoBack()) webView.goBack()
+        else super.onBackPressed()
+    }
+
+    override fun onDestroy() {
+        if (::webView.isInitialized) {
+            webView.stopLoading()
+            webView.destroy()
+        }
+        super.onDestroy()
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+}
